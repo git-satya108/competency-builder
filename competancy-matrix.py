@@ -11,17 +11,21 @@ from youtube_search import YoutubeSearch
 
 load_dotenv()
 
+
 # =============================================================================
 # Custom Lightweight Agent Framework
 # =============================================================================
 
 class Agent:
     """Base class for an agent."""
+
     def process(self, query: str):
         raise NotImplementedError("Each agent must implement its own process() method.")
 
+
 class Memory:
     """Simple memory class to store past interactions."""
+
     def __init__(self):
         self.records = []
 
@@ -31,17 +35,24 @@ class Memory:
     def get_all(self):
         return self.records
 
+
 class Team:
     """
     Orchestrates multiple agents and aggregates results.
-    Retrieves a learning path and context-specific resources for each level.
+    We fetch separate references for each level (Beginner, Intermediate, Advanced).
     """
+
     def __init__(self, agents: dict):
         self.agents = agents
         self.memory = Memory()
 
     def process_query(self, query: str, function: str, competency: str, role: str) -> dict:
-        # 1. Generate the main learning path (rich, structured content)
+        """
+        1) Generate the main learning path.
+        2) For each level (Beginner, Intermediate, Advanced), run separate queries
+           to the web/video agents for context-specific references.
+        """
+        # 1. Generate initial learning path
         lp_result = self.agents["learning_path"].process(query)
         meta_prompt = (
             f"Review and critique the following learning path and suggest improvements:\n\n"
@@ -55,7 +66,7 @@ class Team:
             else lp_result.get("content", "")
         )
 
-        # 2. Gather curated resources per level
+        # 2. Gather references for each level
         references = {
             "beginner": {"web": [], "videos": []},
             "intermediate": {"web": [], "videos": []},
@@ -71,6 +82,7 @@ class Team:
             references[level_key]["videos"] = self.agents["video"].process(level_query)
 
         self.memory.store({"query": query, "learning_path": final_content})
+
         return {
             "content": {
                 "content": final_content,
@@ -80,88 +92,70 @@ class Team:
             "references": references
         }
 
+
 # =============================================================================
 # Agent Implementations
 # =============================================================================
 
 class LearningPathAgent(Agent):
     """
-    Generates a detailed multi-level learning path in rich Markdown.
-    Uses OpenAI, Anthropic, DeepSeek, and Gemini to generate perspectives.
-    Each level should be presented in a Markdown table with columns:
-    Module / Course, URL, Description.
-    At the end, append a 'General Suggestions' section.
+    Generates a structured learning path with tables and a "General Suggestions" section.
+    Uses both OpenAI (GPT-4 Turbo) and Anthropic (Claude) and returns the best result.
     """
-    def __init__(self, openai_client, anthropic_client, deepseek_client, gemini_client):
-        self.llms = {
-            "openai": openai_client,
-            "anthropic": anthropic_client,
-            "deepseek": deepseek_client,
-            "gemini": gemini_client
-        }
+
+    def __init__(self, openai_client, anthropic_client):
+        self.llms = {"openai": openai_client, "anthropic": anthropic_client}
 
     def process(self, query: str):
+        # We'll add instructions to produce each level in tabular format + general suggestions
         extended_prompt = (
             f"{query}\n\n"
-            "Please generate a comprehensive learning path divided into three levels: "
-            "Beginner, Intermediate, and Advanced. For each level, provide a Markdown table with "
-            "columns: **Module / Course**, **URL**, **Description**. After the tables, include a section "
-            "titled 'General Suggestions' that covers integration of practical experience, soft skills development, "
-            "customization, technology integration, and sustainability & ethics. End with a concluding paragraph summarizing the holistic approach."
+            "Please format each level (Beginner, Intermediate, Advanced) in a Markdown table with columns:\n"
+            "**Module / Course**, **URL**, and **Description**.\n"
+            "After the Advanced level, include a section titled 'General Suggestions' with the following text:\n\n"
+            "1. **Integration of Practical Experience**:\n"
+            "   While the path includes numerous courses and certifications, integrating real-world applications "
+            "   through internships, shadowing experiences, or project-based learning could enhance practical skills. "
+            "   Consider recommending partnerships with HR departments in various industries to provide hands-on learning opportunities.\n"
+            "2. **Soft Skills Development**:\n"
+            "   HR roles require strong interpersonal skills, including communication, negotiation, and empathy. "
+            "   Adding specific training focused on these soft skills, especially at the beginner and intermediate levels, could be beneficial.\n"
+            "3. **Customization and Flexibility**:\n"
+            "   Emphasize the importance of tailoring this path to individual needs more explicitly. "
+            "   Suggest tools or methods for self-assessment to help learners identify which areas they need to focus on "
+            "   based on their current skills and career aspirations.\n"
+            "4. **Technology Integration**:\n"
+            "   Given the rapid advancement in HR technologies, including AI and machine learning, incorporating "
+            "   more advanced tech-focused courses at earlier stages could prepare learners for the digital transformation in HR.\n"
+            "5. **Sustainability and Ethics**:\n"
+            "   As companies increasingly prioritize sustainability and ethical practices, including training on these topics "
+            "   could be valuable. This could cover ethical decision-making in HR, sustainable business practices, and "
+            "   corporate social responsibility.\n\n"
+            "Finally, ensure the content is well-structured and references the importance of continuous learning. "
+            "End with a short concluding paragraph summarizing the holistic approach.\n\n"
+            "Now produce the final output in well-structured Markdown."
         )
 
         versions = []
-        for provider in ["openai", "anthropic", "deepseek", "gemini"]:
-            llm_client = self.llms.get(provider)
-            if llm_client is None:
-                continue  # skip if not provided
-
+        for provider in ["openai", "anthropic"]:
             try:
                 start_time = time.time()
-                content = ""
-                provider_name = provider.capitalize()
-
                 if provider == "anthropic":
-                    response = llm_client.messages.create(
+                    response = self.llms[provider].messages.create(
                         model="claude-3-5-sonnet-20241022",
                         max_tokens=4000,
                         messages=[{"role": "user", "content": extended_prompt}]
                     )
                     content = response.content[0].text
                     provider_name = "Claude-3.5-Sonnet"
-                elif provider == "openai":
-                    response = llm_client.chat.completions.create(
+                else:
+                    response = self.llms["openai"].chat.completions.create(
                         model="gpt-4-turbo",
                         messages=[{"role": "user", "content": extended_prompt}],
                         temperature=0.3
                     )
                     content = response.choices[0].message.content
                     provider_name = "OpenAI-GPT4"
-                elif provider == "deepseek":
-                    # Replace with actual DeepSeek call if available.
-                    content = (
-                        "## [DeepSeek Output]\n"
-                        "| Module / Course | URL | Description |\n"
-                        "|-----------------|-----|-------------|\n"
-                        "| DeepSeek Course 1 | https://example.com/course1 | Introductory module on fundamentals. |\n\n"
-                        "### General Suggestions\n"
-                        "Integration of practical experience, soft skills development, customization, technology integration, and ethics.\n"
-                        "Continuous learning is essential.\n"
-                    )
-                    provider_name = "DeepSeek"
-                elif provider == "gemini":
-                    # Replace with actual Gemini call if available.
-                    content = (
-                        "## [Gemini Output]\n"
-                        "| Module / Course | URL | Description |\n"
-                        "|-----------------|-----|-------------|\n"
-                        "| Gemini Course A | https://example.com/courseA | Advanced techniques and leadership development. |\n\n"
-                        "### General Suggestions\n"
-                        "Focus on real-world applications, mentorship, and industry networking for continuous improvement.\n"
-                        "This holistic approach prepares learners for future challenges.\n"
-                    )
-                    provider_name = "Gemini"
-
                 latency = time.time() - start_time
                 versions.append({
                     "content": content,
@@ -176,59 +170,37 @@ class LearningPathAgent(Agent):
             return best
         return {"content": "No learning path generated."}
 
+
 class MetaReviewerAgent(Agent):
     """
-    Reviews and refines the generated learning path using multiple providers.
+    Acts as a meta reviewer/critic to improve the generated learning path.
     """
-    def __init__(self, openai_client, anthropic_client, deepseek_client, gemini_client):
-        self.llms = {
-            "openai": openai_client,
-            "anthropic": anthropic_client,
-            "deepseek": deepseek_client,
-            "gemini": gemini_client
-        }
+
+    def __init__(self, openai_client, anthropic_client):
+        self.llms = {"openai": openai_client, "anthropic": anthropic_client}
 
     def process(self, query: str):
+        prompt = query
         versions = []
-        for provider in ["openai", "anthropic", "deepseek", "gemini"]:
-            llm_client = self.llms.get(provider)
-            if llm_client is None:
-                continue
-
+        for provider in ["openai", "anthropic"]:
             try:
                 start_time = time.time()
-                content = ""
-                provider_name = provider.capitalize()
-
                 if provider == "anthropic":
-                    response = llm_client.messages.create(
+                    response = self.llms[provider].messages.create(
                         model="claude-3-5-sonnet-20241022",
                         max_tokens=2000,
-                        messages=[{"role": "user", "content": query}]
+                        messages=[{"role": "user", "content": prompt}]
                     )
                     content = response.content[0].text
                     provider_name = "Claude-3.5-Sonnet"
-                elif provider == "openai":
-                    response = llm_client.chat.completions.create(
+                else:
+                    response = self.llms["openai"].chat.completions.create(
                         model="gpt-4-turbo",
-                        messages=[{"role": "user", "content": query}],
+                        messages=[{"role": "user", "content": prompt}],
                         temperature=0.3
                     )
                     content = response.choices[0].message.content
                     provider_name = "OpenAI-GPT4"
-                elif provider == "deepseek":
-                    content = (
-                        "## [DeepSeek Meta Review]\n"
-                        "This is a placeholder meta review from DeepSeek providing additional perspective.\n"
-                    )
-                    provider_name = "DeepSeek"
-                elif provider == "gemini":
-                    content = (
-                        "## [Gemini Meta Review]\n"
-                        "This is a placeholder meta review from Gemini offering further improvements.\n"
-                    )
-                    provider_name = "Gemini"
-
                 latency = time.time() - start_time
                 versions.append({
                     "content": content,
@@ -243,10 +215,12 @@ class MetaReviewerAgent(Agent):
             return best
         return {"content": "No review generated."}
 
+
 class WebSearchAgent(Agent):
     """
     Retrieves relevant web resources using Tavily and Google Serper APIs.
     """
+
     def __init__(self, tavily_client, serper_config: dict):
         self.tavily = tavily_client
         self.serper_config = serper_config
@@ -277,10 +251,12 @@ class WebSearchAgent(Agent):
             st.error(f"Search error: {str(e)}")
             return []
 
+
 class VideoSearchAgent(Agent):
     """
     Retrieves relevant video guides using the YouTube Search API.
     """
+
     def process(self, query: str):
         try:
             results = YoutubeSearch(query, max_results=10).to_dict()
@@ -294,6 +270,7 @@ class VideoSearchAgent(Agent):
             st.error(f"Video search error: {str(e)}")
             return []
 
+
 # =============================================================================
 # Streamlit Application
 # =============================================================================
@@ -305,8 +282,8 @@ def main():
         page_icon="📊",
         initial_sidebar_state="expanded"
     )
-    st.title("📊 Competency Mapping -> Learning Path Generator")
-    st.markdown("### AI-Powered Multi-Level Training Recommendations (with Multiple Models)")
+    st.title("📊 Function → Competency → Role Learning Path Generator")
+    st.markdown("### AI-Powered Multi-Level Training Recommendations")
     st.write("---")
 
     # Sidebar: Upload Excel file with columns: [Function, Competency, Role]
@@ -315,10 +292,11 @@ def main():
 
     # Data structure -> { "Human Resources": { "HR Management": ["HR Director", ...], ... }, ... }
     function_dict = {}
+
     if uploaded_file is not None:
         try:
             df = pd.read_excel(uploaded_file)
-            # Expect columns: "Function", "Competency", "Role"
+            # Expecting columns named exactly: "Function", "Competency", "Role"
             for func in df["Function"].unique():
                 sub_df = df[df["Function"] == func]
                 competency_map = {}
@@ -345,6 +323,7 @@ def main():
         selected_competency = st.text_input("Enter Competency", "HR Management")
 
     # Step 3: Choose Role
+    role = None
     if selected_function in function_dict and selected_competency in function_dict[selected_function]:
         role_list = function_dict[selected_function][selected_competency]
         role = st.selectbox("Select Role", role_list)
@@ -354,6 +333,7 @@ def main():
     # Generate learning path if button is pressed
     if st.button("Generate Learning Path"):
         if selected_function and selected_competency and role:
+            # Construct prompt for multi-level learning path (table format + appended general suggestions)
             prompt = (
                 f"Generate a detailed and well-structured learning path for a {role} "
                 f"in the {selected_competency} competency within the {selected_function} function. "
@@ -372,13 +352,6 @@ def main():
             # Prepare external API clients
             openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            # Initialize DeepSeek and Gemini clients using their API keys:
-            deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-            gemini_api_key = os.getenv("GEMINI_API_KEY")
-            # In this example, we assume similar initialization; replace with actual calls.
-            deepseek_client = deepseek_api_key  # placeholder
-            gemini_client = gemini_api_key      # placeholder
-
             tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
             serper_config = {
                 "url": "https://google.serper.dev/search",
@@ -387,8 +360,8 @@ def main():
             }
 
             # Instantiate agents
-            lp_agent = LearningPathAgent(openai_client, anthropic_client, deepseek_client, gemini_client)
-            mr_agent = MetaReviewerAgent(openai_client, anthropic_client, deepseek_client, gemini_client)
+            lp_agent = LearningPathAgent(openai_client, anthropic_client)
+            mr_agent = MetaReviewerAgent(openai_client, anthropic_client)
             ws_agent = WebSearchAgent(tavily_client, serper_config)
             vs_agent = VideoSearchAgent()
 
@@ -422,13 +395,19 @@ def main():
                 c1, c2 = st.columns(2)
                 c1.metric("Processing Time", f"{latency:.2f}s")
                 c2.metric("AI Engine", provider)
-                st.caption("Powered by Claude-3.5-Sonnet, GPT-4 Turbo, DeepSeek, and Gemini")
+                st.caption("Powered by Claude-3.5-Sonnet and GPT-4 Turbo")
+
+        # Right pane: curated resources for each level
         with ref_col:
             st.subheader("🔗 Curated Resources")
+
+            # We'll display each level's resources in a separate expander
             for level_key in ["beginner", "intermediate", "advanced"]:
-                level_title = level_key.capitalize()
+                level_title = level_key.capitalize()  # e.g. "Beginner"
                 level_data = references.get(level_key, {"web": [], "videos": []})
+
                 with st.expander(f"{level_title} Level"):
+                    # Web references
                     st.markdown("**Web References**")
                     web_results = level_data["web"]
                     if web_results:
@@ -436,6 +415,8 @@ def main():
                             st.markdown(f"{i}. [{item['title']}]({item['url']})")
                     else:
                         st.info("No web resources found")
+
+                    # Video guides
                     st.markdown("**Video Guides**")
                     video_results = level_data["videos"]
                     if video_results:
@@ -444,6 +425,8 @@ def main():
                             st.caption(f"Views: {vid.get('views', 'N/A')}")
                     else:
                         st.info("No video guides found")
+
+            # For version history, if you maintain multiple runs
             with st.expander("🕰 Document Versions"):
                 if 'history' in st.session_state and len(st.session_state.history) > 1:
                     for i, rev in enumerate(st.session_state.history):
@@ -454,6 +437,7 @@ def main():
                             on_click=lambda r=rev: st.session_state.update(current_result=r),
                             help=f"Load version {i + 1}"
                         )
+                        # If you store provider info in rev["learning_path"], adapt accordingly
                         prov = rev["learning_path"].get("provider", "Unknown")
                         lat = rev["learning_path"].get("latency", 0.0)
                         c2.caption(f"{prov} | {lat:.1f}s")
